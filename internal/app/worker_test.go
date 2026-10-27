@@ -48,6 +48,65 @@ func TestWorkerSendsEachJobExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestWorkerCompletesPendingJobWithExistingDeliveryWithoutDuplicate(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	db := store.OpenTestDB(t)
+	svc := app.NewService(db, func() time.Time { return now })
+	worker := app.NewWorker(db, func() time.Time { return now })
+
+	product, err := svc.CreateProduct(ctx, app.CreateProductInput{SKU: "sku-replay-delivery", Name: "Cap", Stock: 0})
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	if _, err := svc.RegisterRestock(ctx, app.RegisterRestockInput{ProductID: product.ID, Email: "a@example.com"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.Replenish(ctx, product.ID, 2); err != nil {
+		t.Fatalf("replenish: %v", err)
+	}
+
+	var jobID, customerID int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT id, customer_id
+		FROM notification_jobs
+		WHERE product_id = ?`, product.ID).Scan(&jobID, &customerID); err != nil {
+		t.Fatalf("query job: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO notification_deliveries (job_id, customer_id, product_id, message, sent_at)
+		VALUES (?, ?, ?, ?, ?)`, jobID, customerID, product.ID, "already delivered", now.Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatalf("insert existing delivery: %v", err)
+	}
+
+	result, err := worker.ProcessBatch(ctx, 10)
+	if err != nil {
+		t.Fatalf("process replay batch: %v", err)
+	}
+	if result.Claimed != 1 || result.Sent != 0 {
+		t.Fatalf("expected replay to complete without a new send, got %+v", result)
+	}
+
+	var deliveryCount int
+	if err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM notification_deliveries
+		WHERE job_id = ?`, jobID).Scan(&deliveryCount); err != nil {
+		t.Fatalf("count deliveries: %v", err)
+	}
+	if deliveryCount != 1 {
+		t.Fatalf("expected exactly one delivery row, got %d", deliveryCount)
+	}
+
+	views, err := svc.ListNotifications(ctx)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(views) != 1 || views[0].JobStatus != "sent" || views[0].SentAt == nil {
+		t.Fatalf("expected replayed job to be marked sent, got %+v", views)
+	}
+}
+
 func TestWorkerDefersMutedCustomerUntilMuteWindowEnds(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 27, 23, 30, 0, 0, time.UTC)
@@ -87,6 +146,49 @@ func TestWorkerDefersMutedCustomerUntilMuteWindowEnds(t *testing.T) {
 	wantAvailable := time.Date(2026, 10, 28, 7, 0, 0, 0, time.UTC)
 	if !views[0].AvailableAt.Equal(wantAvailable) {
 		t.Fatalf("expected available_at %s, got %s", wantAvailable, views[0].AvailableAt)
+	}
+}
+
+func TestWorkerUsesClockLocationForMuteWindowAndStoresAvailableAtUTC(t *testing.T) {
+	ctx := context.Background()
+	location := time.FixedZone("demo", 8*60*60)
+	now := time.Date(2026, 10, 27, 23, 30, 0, 0, location)
+	db := store.OpenTestDB(t)
+	svc := app.NewService(db, func() time.Time { return now })
+	worker := app.NewWorker(db, func() time.Time { return now })
+
+	product, err := svc.CreateProduct(ctx, app.CreateProductInput{SKU: "sku-local-mute", Name: "Bag", Stock: 0})
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	start, end := 23*60, 7*60
+	if err := svc.SetMuteWindow(ctx, app.SetMuteWindowInput{
+		Email: "quiet-local@example.com", StartMinute: &start, EndMinute: &end,
+	}); err != nil {
+		t.Fatalf("set mute window: %v", err)
+	}
+	if _, err := svc.RegisterRestock(ctx, app.RegisterRestockInput{ProductID: product.ID, Email: "quiet-local@example.com"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.Replenish(ctx, product.ID, 1); err != nil {
+		t.Fatalf("replenish: %v", err)
+	}
+
+	result, err := worker.ProcessBatch(ctx, 10)
+	if err != nil {
+		t.Fatalf("process muted batch: %v", err)
+	}
+	if result.Deferred != 1 || result.Sent != 0 {
+		t.Fatalf("expected local mute window to defer one job, got %+v", result)
+	}
+
+	views, err := svc.ListNotifications(ctx)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	wantAvailable := time.Date(2026, 10, 28, 7, 0, 0, 0, location).UTC()
+	if !views[0].AvailableAt.Equal(wantAvailable) {
+		t.Fatalf("expected UTC available_at %s, got %s", wantAvailable, views[0].AvailableAt)
 	}
 }
 

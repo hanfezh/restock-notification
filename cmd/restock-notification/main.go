@@ -23,7 +23,7 @@ func main() {
 	}
 	defer db.Close()
 
-	clock := func() time.Time { return time.Now().UTC() }
+	clock := time.Now
 	service := app.NewService(db, clock)
 	worker := app.NewWorker(db, clock)
 	handler := httpapi.NewServer(service, worker)

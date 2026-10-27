@@ -159,6 +159,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusBadRequest
 	case errors.Is(err, app.ErrProductInStock):
 		status = http.StatusConflict
+	case errors.Is(err, app.ErrConflict):
+		status = http.StatusConflict
 	case errors.Is(err, app.ErrNotFound):
 		status = http.StatusNotFound
 	}

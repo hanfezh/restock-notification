@@ -57,6 +57,40 @@ func TestHTTPRestockFlow(t *testing.T) {
 	}
 }
 
+func TestHTTPDuplicateProductSKUReturnsConflict(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	db := store.OpenTestDB(t)
+	svc := app.NewService(db, func() time.Time { return now })
+	worker := app.NewWorker(db, func() time.Time { return now })
+	server := httptest.NewServer(httpapi.NewServer(svc, worker))
+	t.Cleanup(server.Close)
+
+	body := map[string]any{"sku": "sku-http-conflict", "name": "Watch", "stock": 0}
+	postJSON(t, server.URL+"/products", body, http.StatusCreated, nil)
+	postJSON(t, server.URL+"/products", body, http.StatusConflict, nil)
+}
+
+func TestHTTPDuplicateLiveRegistrationReturnsConflict(t *testing.T) {
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	db := store.OpenTestDB(t)
+	svc := app.NewService(db, func() time.Time { return now })
+	worker := app.NewWorker(db, func() time.Time { return now })
+	server := httptest.NewServer(httpapi.NewServer(svc, worker))
+	t.Cleanup(server.Close)
+
+	var product struct {
+		ID int64 `json:"id"`
+	}
+	postJSON(t, server.URL+"/products", map[string]any{
+		"sku": "sku-http-live-registration", "name": "Watch", "stock": 0,
+	}, http.StatusCreated, &product)
+
+	productURL := fmt.Sprintf("%s/products/%d", server.URL, product.ID)
+	body := map[string]any{"email": "a@example.com"}
+	postJSON(t, productURL+"/registrations", body, http.StatusCreated, nil)
+	postJSON(t, productURL+"/registrations", body, http.StatusConflict, nil)
+}
+
 func TestHTTPMuteWindowUsesCustomerIDPath(t *testing.T) {
 	now := time.Date(2026, 10, 27, 23, 30, 0, 0, time.UTC)
 	db := store.OpenTestDB(t)

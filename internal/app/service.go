@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var (
 	ErrProductInStock = errors.New("product is in stock")
 	ErrInvalidInput   = errors.New("invalid input")
 	ErrNotFound       = errors.New("not found")
+	ErrConflict       = errors.New("conflict")
 )
 
 type Service struct {
@@ -35,6 +39,9 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (Pro
 		INSERT INTO products (sku, name, stock, updated_at)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)`, in.SKU, in.Name, in.Stock)
 	if err != nil {
+		if isSQLiteConstraint(err) {
+			return Product{}, fmt.Errorf("%w: product SKU already exists", ErrConflict)
+		}
 		return Product{}, err
 	}
 	id, err := res.LastInsertId()
@@ -73,6 +80,9 @@ func (s *Service) RegisterRestock(ctx context.Context, in RegisterRestockInput) 
 		INSERT INTO restock_registrations (product_id, customer_id, status, updated_at)
 		VALUES (?, ?, 'active', CURRENT_TIMESTAMP)`, in.ProductID, customerID)
 	if err != nil {
+		if isSQLiteConstraint(err) {
+			return Registration{}, fmt.Errorf("%w: live registration already exists", ErrConflict)
+		}
 		return Registration{}, err
 	}
 	registrationID, err := res.LastInsertId()
@@ -297,4 +307,9 @@ func parseDBTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unsupported time format %q", value)
+}
+
+func isSQLiteConstraint(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqlite3.SQLITE_CONSTRAINT
 }

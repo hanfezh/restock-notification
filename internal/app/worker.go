@@ -23,14 +23,15 @@ func (w *Worker) ProcessBatch(ctx context.Context, limit int) (WorkerResult, err
 	if limit <= 0 {
 		limit = 10
 	}
-	now := w.clock().UTC()
+	wallNow := w.clock()
+	nowUTC := wallNow.UTC()
 	rows, err := w.db.QueryContext(ctx, `
 		SELECT j.id, j.registration_id, j.customer_id, j.product_id, c.email, c.mute_start_minute, c.mute_end_minute
 		FROM notification_jobs j
 		JOIN customers c ON c.id = j.customer_id
 		WHERE j.status = 'pending' AND datetime(j.available_at) <= datetime(?)
 		ORDER BY j.id
-		LIMIT ?`, formatDBTime(now), limit)
+		LIMIT ?`, formatDBTime(nowUTC), limit)
 	if err != nil {
 		return WorkerResult{}, err
 	}
@@ -55,14 +56,14 @@ func (w *Worker) ProcessBatch(ctx context.Context, limit int) (WorkerResult, err
 
 	result := WorkerResult{Claimed: len(jobs)}
 	for _, j := range jobs {
-		if err := w.processJob(ctx, j.id, j.registrationID, j.customerID, j.productID, j.email, nullMinute(j.start), nullMinute(j.end), now, &result); err != nil {
+		if err := w.processJob(ctx, j.id, j.registrationID, j.customerID, j.productID, j.email, nullMinute(j.start), nullMinute(j.end), wallNow, nowUTC, &result); err != nil {
 			return result, err
 		}
 	}
 	return result, nil
 }
 
-func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int64, customerID int64, productID int64, email string, start *int, end *int, now time.Time, result *WorkerResult) error {
+func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int64, customerID int64, productID int64, email string, start *int, end *int, wallNow time.Time, nowUTC time.Time, result *WorkerResult) error {
 	tx, err := w.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -72,7 +73,7 @@ func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int
 	res, err := tx.ExecContext(ctx, `
 		UPDATE notification_jobs
 		SET status = 'processing', updated_at = ?
-		WHERE id = ? AND status = 'pending'`, formatDBTime(now), jobID)
+		WHERE id = ? AND status = 'pending'`, formatDBTime(nowUTC), jobID)
 	if err != nil {
 		return err
 	}
@@ -84,12 +85,12 @@ func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int
 		return tx.Commit()
 	}
 
-	if IsMutedAt(start, end, now) {
-		availableAt := MuteEndAfter(*start, *end, now).UTC()
+	if IsMutedAt(start, end, wallNow) {
+		availableAt := MuteEndAfter(*start, *end, wallNow).UTC()
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE notification_jobs
 			SET status = 'pending', available_at = ?, updated_at = ?
-			WHERE id = ?`, formatDBTime(availableAt), formatDBTime(now), jobID); err != nil {
+			WHERE id = ?`, formatDBTime(availableAt), formatDBTime(nowUTC), jobID); err != nil {
 			return err
 		}
 		result.Deferred++
@@ -100,7 +101,7 @@ func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int
 	res, err = tx.ExecContext(ctx, `
 		INSERT INTO notification_deliveries (job_id, customer_id, product_id, message, sent_at)
 		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(job_id) DO NOTHING`, jobID, customerID, productID, message, formatDBTime(now))
+		ON CONFLICT(job_id) DO NOTHING`, jobID, customerID, productID, message, formatDBTime(nowUTC))
 	if err != nil {
 		return err
 	}
@@ -111,13 +112,13 @@ func (w *Worker) processJob(ctx context.Context, jobID int64, registrationID int
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE notification_jobs
 		SET status = 'sent', updated_at = ?
-		WHERE id = ?`, formatDBTime(now), jobID); err != nil {
+		WHERE id = ?`, formatDBTime(nowUTC), jobID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE restock_registrations
 		SET status = 'notified', updated_at = ?
-		WHERE id = ?`, formatDBTime(now), registrationID); err != nil {
+		WHERE id = ?`, formatDBTime(nowUTC), registrationID); err != nil {
 		return err
 	}
 	if delivered > 0 {
