@@ -89,3 +89,46 @@ func TestWorkerDefersMutedCustomerUntilMuteWindowEnds(t *testing.T) {
 		t.Fatalf("expected available_at %s, got %s", wantAvailable, views[0].AvailableAt)
 	}
 }
+
+func TestWorkerDoesNotClaimFutureSQLiteTimestampOnSameDate(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	db := store.OpenTestDB(t)
+	svc := app.NewService(db, func() time.Time { return now })
+	worker := app.NewWorker(db, func() time.Time { return now })
+
+	product, err := svc.CreateProduct(ctx, app.CreateProductInput{SKU: "sku-5", Name: "Socks", Stock: 0})
+	if err != nil {
+		t.Fatalf("create product: %v", err)
+	}
+	if _, err := svc.RegisterRestock(ctx, app.RegisterRestockInput{ProductID: product.ID, Email: "future@example.com"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := svc.Replenish(ctx, product.ID, 1); err != nil {
+		t.Fatalf("replenish: %v", err)
+	}
+
+	futureAvailable := time.Date(2026, 10, 27, 13, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `
+		UPDATE notification_jobs
+		SET available_at = ?
+		WHERE product_id = ?`, futureAvailable.Format("2006-01-02 15:04:05"), product.ID); err != nil {
+		t.Fatalf("set future available_at: %v", err)
+	}
+
+	result, err := worker.ProcessBatch(ctx, 10)
+	if err != nil {
+		t.Fatalf("process batch: %v", err)
+	}
+	if result.Claimed != 0 || result.Sent != 0 || result.Deferred != 0 {
+		t.Fatalf("expected future job not to be claimed, got %+v", result)
+	}
+
+	views, err := svc.ListNotifications(ctx)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(views) != 1 || views[0].JobStatus != "pending" || views[0].SentAt != nil {
+		t.Fatalf("expected future job to remain pending, got %+v", views)
+	}
+}

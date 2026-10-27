@@ -110,7 +110,7 @@ func (s *Service) Replenish(ctx context.Context, productID int64, quantity int) 
 
 	result := ReplenishResult{ProductID: productID, PreviousStock: previous, NewStock: newStock}
 	if previous == 0 && newStock > 0 {
-		eventID, created, err := createRestockEventAndJobs(ctx, tx, productID, previous, newStock)
+		eventID, created, err := createRestockEventAndJobs(ctx, tx, productID, previous, newStock, s.clock().UTC())
 		if err != nil {
 			return ReplenishResult{}, err
 		}
@@ -136,7 +136,7 @@ func upsertCustomer(ctx context.Context, tx *sql.Tx, email string) (int64, error
 	return id, nil
 }
 
-func createRestockEventAndJobs(ctx context.Context, tx *sql.Tx, productID int64, previous int, next int) (int64, int, error) {
+func createRestockEventAndJobs(ctx context.Context, tx *sql.Tx, productID int64, previous int, next int, now time.Time) (int64, int, error) {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO restock_events (product_id, previous_stock, new_stock)
 		VALUES (?, ?, ?)`, productID, previous, next)
@@ -178,8 +178,8 @@ func createRestockEventAndJobs(ctx context.Context, tx *sql.Tx, productID int64,
 
 	for _, r := range registrations {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO notification_jobs (registration_id, restock_event_id, customer_id, product_id, status, updated_at)
-			VALUES (?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)`, r.id, eventID, r.customerID, productID); err != nil {
+			INSERT INTO notification_jobs (registration_id, restock_event_id, customer_id, product_id, status, available_at, updated_at)
+			VALUES (?, ?, ?, ?, 'pending', ?, ?)`, r.id, eventID, r.customerID, productID, formatDBTime(now), formatDBTime(now)); err != nil {
 			return 0, 0, err
 		}
 		if _, err := tx.ExecContext(ctx, `

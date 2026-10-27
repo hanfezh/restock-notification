@@ -28,7 +28,7 @@ func (w *Worker) ProcessBatch(ctx context.Context, limit int) (WorkerResult, err
 		SELECT j.id, j.registration_id, j.customer_id, j.product_id, c.email, c.mute_start_minute, c.mute_end_minute
 		FROM notification_jobs j
 		JOIN customers c ON c.id = j.customer_id
-		WHERE j.status = 'pending' AND j.available_at <= ?
+		WHERE j.status = 'pending' AND datetime(j.available_at) <= datetime(?)
 		ORDER BY j.id
 		LIMIT ?`, formatDBTime(now), limit)
 	if err != nil {
@@ -160,5 +160,5 @@ func nullMinute(value sql.NullInt64) *int {
 }
 
 func formatDBTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339)
+	return value.UTC().Format("2006-01-02 15:04:05")
 }
