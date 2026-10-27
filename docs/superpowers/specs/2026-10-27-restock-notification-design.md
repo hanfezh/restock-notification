@@ -33,6 +33,29 @@ The service consists of four focused parts:
 - SQLite repositories store products, customers, registrations, restock events, notification jobs, and deliveries.
 - A worker processes pending notification jobs in bounded batches.
 
+```mermaid
+flowchart LR
+    Client[HTTP Client] --> API[Go HTTP API]
+    API --> Service[Service Layer]
+    Service --> SQLite[(SQLite)]
+    SQLite --> Products[products]
+    SQLite --> Customers[customers]
+    SQLite --> Registrations[restock_registrations]
+    SQLite --> Events[restock_events]
+    SQLite --> Jobs[notification_jobs]
+    SQLite --> Deliveries[notification_deliveries]
+
+    Worker[Background Worker] --> SQLite
+    Worker --> Notifier[Stub Notifier]
+    Notifier --> Deliveries
+
+    Replenish[Replenish Product] --> Service
+    Service -->|same transaction| Events
+    Service -->|same transaction| Jobs
+    Jobs -->|due jobs| Worker
+    Customers -->|mute window| Worker
+```
+
 The worker runs inside the same process for the demo. It also exposes a deterministic `ProcessBatch`-style method so tests can drive job processing without sleeps.
 
 ## Data Model
@@ -150,7 +173,7 @@ Lists notification jobs and sent deliveries for demo and test verification.
 - registration state transitions from `active` to `queued` to `notified`;
 - worker logic that treats an existing delivery as successful idempotent completion.
 
-If the process crashes after jobs are created but before delivery, jobs remain in SQLite and the worker can process them after restart. If the process crashes after recording delivery but before marking the job as sent, the unique delivery row lets the next worker pass mark the job as sent without sending a duplicate.
+If the process crashes after jobs are created but before delivery, jobs remain in SQLite and the worker can process them after restart. If the process crashes after recording delivery but before marking the job as sent, the unique delivery row allows the next worker run to mark the job as sent without sending a duplicate notification.
 
 SQLite write concurrency is limited, but that is acceptable for this interview implementation. Database uniqueness is the source of truth for duplicate prevention.
 
