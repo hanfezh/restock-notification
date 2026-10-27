@@ -35,6 +35,13 @@ type ReplenishResult struct {
 	CreatedJobs    int   `json:"created_jobs"`
 }
 
+type WorkerResult struct {
+	Claimed  int `json:"claimed"`
+	Sent     int `json:"sent"`
+	Deferred int `json:"deferred"`
+	Failed   int `json:"failed"`
+}
+
 type SetMuteWindowInput struct {
 	Email       string `json:"email"`
 	StartMinute *int   `json:"start_minute"`
