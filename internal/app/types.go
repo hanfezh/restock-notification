@@ -43,6 +43,7 @@ type WorkerResult struct {
 }
 
 type SetMuteWindowInput struct {
+	CustomerID  int64  `json:"customer_id,omitempty"`
 	Email       string `json:"email"`
 	StartMinute *int   `json:"start_minute"`
 	EndMinute   *int   `json:"end_minute"`

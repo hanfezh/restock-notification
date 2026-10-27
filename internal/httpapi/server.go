@@ -83,7 +83,8 @@ func replenish(service *app.Service) http.HandlerFunc {
 
 func setMuteWindow(service *app.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, err := parsePathID(r); err != nil {
+		customerID, err := parsePathID(r)
+		if err != nil {
 			writeError(w, err)
 			return
 		}
@@ -92,6 +93,7 @@ func setMuteWindow(service *app.Service) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
+		in.CustomerID = customerID
 		if err := service.SetMuteWindow(r.Context(), in); err != nil {
 			writeError(w, err)
 			return

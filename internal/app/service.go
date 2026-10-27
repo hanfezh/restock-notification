@@ -193,7 +193,8 @@ func createRestockEventAndJobs(ctx context.Context, tx *sql.Tx, productID int64,
 }
 
 func (s *Service) SetMuteWindow(ctx context.Context, in SetMuteWindowInput) error {
-	if strings.TrimSpace(in.Email) == "" {
+	email := strings.TrimSpace(in.Email)
+	if in.CustomerID < 0 || (in.CustomerID == 0 && email == "") {
 		return ErrInvalidInput
 	}
 	if (in.StartMinute == nil) != (in.EndMinute == nil) {
@@ -211,15 +212,27 @@ func (s *Service) SetMuteWindow(ctx context.Context, in SetMuteWindowInput) erro
 	}
 	defer tx.Rollback()
 
-	customerID, err := upsertCustomer(ctx, tx, in.Email)
+	customerID := in.CustomerID
+	if customerID == 0 {
+		var err error
+		customerID, err = upsertCustomer(ctx, tx, email)
+		if err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE customers
+		SET mute_start_minute = ?, mute_end_minute = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?`, in.StartMinute, in.EndMinute, customerID)
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE customers
-		SET mute_start_minute = ?, mute_end_minute = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ?`, in.StartMinute, in.EndMinute, customerID); err != nil {
+	updated, err := res.RowsAffected()
+	if err != nil {
 		return err
+	}
+	if updated == 0 {
+		return ErrNotFound
 	}
 	return tx.Commit()
 }
